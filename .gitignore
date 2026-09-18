@@ -11,8 +11,9 @@
 secrets/
 
 # --- Configuration Airflow (mots de passe) ---
-# simple_auth_manager_passwords.json contient les mots de passe des utilisateurs,
-# genere par Airflow 3. On conserve uniquement .gitkeep pour garder le dossier.
+# Les identifiants sont definis dans .env et generes au demarrage du
+# conteneur (voir scripts/airflow-entrypoint.sh). On ignore par securite
+# tout JSON genere dans le dossier config.
 config/*.json
 !config/.gitkeep
 

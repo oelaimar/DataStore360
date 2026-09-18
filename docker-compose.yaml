@@ -31,19 +31,20 @@ services:
     container_name: airflow
     restart: unless-stopped
     command: standalone
+    entrypoint: ["/usr/bin/dumb-init", "--", "/scripts/airflow-entrypoint.sh"]
     env_file:
       - .env
     environment:
       AIRFLOW__CORE__EXECUTOR: LocalExecutor
-      AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_USERS: ${MANAGER_USERS_USERNAME}:${MANAGER_USERS_ROLE}
-      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_USERS: ${AIRFLOW_ADMIN_USERNAME}:${AIRFLOW_ADMIN_ROLE}
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${AIRFLOW_DB}
     ports:
       - "8080:8080"
     volumes:
       - ./dags:/opt/airflow/dags
       - ./logs:/opt/airflow/logs
       - ./plugins:/opt/airflow/plugins
-      - ./config/simple_auth_manager_passwords.json:/opt/airflow/simple_auth_manager_passwords.json.generated
+      - ./scripts:/scripts:ro
     depends_on:
       - postgres
 
