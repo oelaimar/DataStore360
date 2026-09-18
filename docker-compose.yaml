@@ -27,10 +27,12 @@ services:
     depends_on:
       - postgres
   airflow:
-    image: apache/airflow:3.0.6
+    build: .
+    image: datastore360-airflow
     container_name: airflow
     restart: unless-stopped
     command: standalone
+    user: "${AIRFLOW_UID}:0"
     entrypoint: ["/usr/bin/dumb-init", "--", "/scripts/airflow-entrypoint.sh"]
     env_file:
       - .env
@@ -44,7 +46,9 @@ services:
       - ./dags:/opt/airflow/dags
       - ./logs:/opt/airflow/logs
       - ./plugins:/opt/airflow/plugins
+      - ./data:/opt/airflow/data
       - ./scripts:/scripts:ro
+      - ./reports:/opt/airflow/reports
     depends_on:
       - postgres
 
