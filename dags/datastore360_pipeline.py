@@ -1,7 +1,5 @@
-from statistics import correlation
-
 from airflow.sdk import dag, task
-from narwhals import read_csv
+from airflow.providers.postgres.hooks.postgres import PostgresHook
 
 ROOT_DIR = "/opt/airflow"
 ffill_bfill = lambda x : x.ffill().bfill()
@@ -25,7 +23,7 @@ def etl_pipline():
         import pandas as pd
         from ydata_profiling import ProfileReport
         df = pd.read_csv(file_path)
-        profile = ProfileReport(df, title="Data Profiling Report")
+        profile = ProfileReport(df, title="Data Profiling Report" ,minimal=True,correlations=None,)
         profile.to_file(f"{ROOT_DIR}/reports/rapport_profiling.html")
         return file_path
 
@@ -35,6 +33,7 @@ def etl_pipline():
         import numpy as np
         #change data format
         df = pd.read_csv(file_path)
+        df = df.drop_duplicates(subset='Row ID', keep='first')
 
         df['Order Date'] = pd.to_datetime(
             df['Order Date'],
@@ -215,7 +214,7 @@ def etl_pipline():
         # the product cost
         df['Product Cost'] = (df['Sales'] - df['Profit']) / df['Quantity']
 
-        df.to_csv(OUTPUT_PATH)
+        df.to_csv(OUTPUT_PATH, index=False)
         return OUTPUT_PATH
 
     @task
@@ -230,9 +229,188 @@ def etl_pipline():
 
         df['Customer Name'] = df['Customer Name'].astype(str).apply(hashing)
 
-        df.to_csv(OUTPUT_PATH)
+        df.to_csv(OUTPUT_PATH, index=False)
 
         return OUTPUT_PATH
 
-    transformation(cleaning(profiling(extract())))
+    @task
+    def save(file_path):
+        import numpy as np
+        import pandas as pd
+        import re
+        from datetime import date
+
+        pg_hook = PostgresHook(postgres_conn_id='postgres_localhost')
+
+        # Create database schemas/tables
+
+        for sql_file in ("include/sql/staging.sql", "include/sql/core.sql"):
+            with open(f"{ROOT_DIR}/{sql_file}", encoding="utf-8") as f:
+                pg_hook.run(sql=f.read())
+
+        # Read cleaned CSV
+        df = pd.read_csv(file_path)
+        # CSV columns -> database columns
+
+        csv_to_db = {
+            "Row ID": "row_id",
+            "Order ID": "order_id",
+            "Order Date": "order_date",
+            "Ship Date": "ship_date",
+            "Ship Mode": "ship_mode",
+            "Customer ID": "customer_id_hash",
+            "Customer Name": "customer_name_hash",
+            "Segment": "segment",
+            "Country": "country",
+            "City": "city",
+            "State": "state",
+            "Postal Code": "postal_code",
+            "Region": "region",
+            "Product ID": "product_id",
+            "Category": "category",
+            "Sub-Category": "sub_category",
+            "Product Name": "product_name",
+            "Sales": "sales",
+            "Quantity": "quantity",
+            "Discount": "discount",
+            "Profit": "profit",
+        }
+
+        db = (df[list(csv_to_db)].rename(columns=csv_to_db).copy())
+
+        # Convert DataFrame rows to PostgreSQL-compatible rows
+
+        def to_rows(frame, cols, date_cols=()):
+            date_cols = set(date_cols)
+            series = []
+            for col in cols:
+                s = frame[col]
+                if col in date_cols:
+                    s = pd.to_datetime(s)
+                series.append(s)
+
+            rows = []
+            for values in zip(*series):
+                row = []
+                for value in values:
+                    if pd.isna(value) is True:  # `is True` dodges array-valued results
+                        row.append(None)
+                    elif isinstance(value, pd.Timestamp):
+                        row.append(value.date())
+                    elif isinstance(value, np.generic):
+                        row.append(value.item())
+                    else:
+                        row.append(value)
+                rows.append(row)
+            return rows
+
+        # Load raw data into staging
+
+        staging_cols = list(csv_to_db.values())
+        pg_hook.insert_rows(
+            table="staging.superstore_raw",
+            rows=to_rows(db, staging_cols),
+            target_fields=staging_cols,
+        )
+
+        # Customers
+
+        customers_cols = [
+            "customer_id_hash",
+            "customer_name_hash",
+            "segment",
+            "country",
+            "city",
+            "state",
+            "postal_code",
+            "region",
+        ]
+
+        customers = (db[customers_cols].drop_duplicates(subset="customer_id_hash").copy())
+        # Clean postal codes
+        def clean_postal_code(value):
+            if pd.isna(value):
+                return None
+            match = re.match( r"\D*(\d+)", str(value), )
+
+            if match:
+                return int(match.group(1))
+            return None
+
+        customers["postal_code"] = (customers["postal_code"].apply(clean_postal_code))
+
+
+        pg_hook.insert_rows(
+            table="core.customers",
+            rows=to_rows(customers, customers_cols),
+            target_fields=customers_cols,
+        )
+
+        # Products
+
+        products_cols = ["product_id", "category", "sub_category", "product_name"]
+        products = (db[products_cols].drop_duplicates(subset="product_id").copy())
+        pg_hook.insert_rows(
+            table="core.products",
+            rows=to_rows(products, products_cols),
+            target_fields=products_cols,
+        )
+
+        # Orders
+
+        orders_base = ["row_id", "order_id", "customer_id", "product_id",
+                       "order_date", "ship_date", "ship_mode",
+                       "sales", "quantity", "discount", "profit"]
+        orders_cols = orders_base + ["delivery_time", "profit_margin"]
+        orders = db.rename(columns={"customer_id_hash": "customer_id"})[orders_base].copy()
+
+        # Convert dates
+
+        order_dt = pd.to_datetime(orders["order_date"], errors="coerce")
+        ship_dt = pd.to_datetime(orders["ship_date"], errors="coerce")
+
+        # Calculate delivery time
+
+        orders["delivery_time"] = (ship_dt - order_dt).dt.days
+
+        # Calculate profit margin
+
+        orders["profit_margin"] = np.where(orders["sales"] > 0,
+                                           orders["profit"] / orders["sales"],
+                                           None)
+
+        # Validate orders
+
+        valid_order = (
+            order_dt.notna()
+            & ship_dt.notna()
+            & (orders["delivery_time"] >= 0)
+            & (orders["quantity"] > 0)
+            & (orders["sales"] >= 0)
+            & orders["discount"].between(0, 1)
+        )
+        orders = orders[valid_order].copy()
+
+        # Quantity -> integer
+
+        orders["quantity"] = orders["quantity"].astype(int)
+
+        # Load orders into PostgreSQL
+
+        pg_hook.insert_rows(
+            table="core.orders",
+            rows=to_rows(orders, orders_cols, date_cols=("order_date", "ship_date")),
+            target_fields=orders_cols,
+        )
+
+    extracted = extract()
+
+    profiled = profiling(extracted)
+
+    cleaned = cleaning(profiled)
+
+    transformed = transformation(cleaned)
+
+    save(transformed)
+
 etl_pipline()

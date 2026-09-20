@@ -7,7 +7,7 @@ DROP TABLE IF EXISTS core.products;
 
 
 CREATE TABLE core.customers (
-    customer_id_hash   VARCHAR(16)  PRIMARY KEY,
+    customer_id_hash   VARCHAR(64) PRIMARY KEY,
     customer_name_hash VARCHAR(64) NOT NULL,
     segment            VARCHAR(32),
     country            VARCHAR(64),
@@ -28,20 +28,20 @@ CREATE TABLE core.products (
 CREATE TABLE core.orders (
     row_id        BIGINT PRIMARY KEY,
     order_id      VARCHAR(32) NOT NULL,
-    customer_id   VARCHAR(16) NOT NULL,
+    customer_id   VARCHAR(64) NOT NULL,
     product_id    VARCHAR(32) NOT NULL,
     order_date    DATE        NOT NULL,
     ship_date     DATE        NOT NULL,
     ship_mode     VARCHAR(32),
     sales         DOUBLE PRECISION NOT NULL CHECK (sales >= 0),
-    quantity      INTEGER           NOT NULL CHECK (quantity > 0),
-    discount      DOUBLE PRECISION  NOT NULL CHECK (discount BETWEEN 0 AND 1),
+    quantity      INTEGER          NOT NULL CHECK (quantity > 0),
+    discount      DOUBLE PRECISION NOT NULL CHECK (discount BETWEEN 0 AND 1),
     profit        DOUBLE PRECISION,
-    delivery_time INTEGER           CHECK (delivery_time >= 0),
+    delivery_time INTEGER          CHECK (delivery_time >= 0),
     profit_margin DOUBLE PRECISION,
 
     CONSTRAINT fk_orders_customer FOREIGN KEY (customer_id)
-        REFERENCES core.customers (customer_id),
+        REFERENCES core.customers (customer_id_hash),
     CONSTRAINT fk_orders_product FOREIGN KEY (product_id)
         REFERENCES core.products (product_id),
     CONSTRAINT chk_ship_after_order CHECK (ship_date >= order_date)
